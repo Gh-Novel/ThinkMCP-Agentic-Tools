@@ -42,6 +42,7 @@ These are deliberate design decisions, not defaults:
 - 💾 **Durable memory.** `remember`/`recall` are SQLite-backed ([server/tools/memory.py](server/tools/memory.py)), so findings survive restarts and are shared between the UI agent and any connected MCP host.
 - 🚦 **Two transports, one server.** stdio for desktop hosts, Streamable HTTP for remote/multi-client deployments — selected at launch, not forked code.
 - ✅ **Tested and linted in CI.** 31 pytest cases covering tools, agent helpers, and server registration, plus ruff — on Python 3.10 and 3.12 for every push.
+- 📊 **Measured, not assumed.** The reasoning tools are evaluated with a blind ablation benchmark (two agent hosts, independent LLM judge) — and the honest result, including where the scaffolding *doesn't* help, is published below.
 
 ## The 13 tools
 
@@ -102,7 +103,7 @@ pip install -e ".[dev]"
 
 ```bash
 export TAVILY_API_KEY="tvly-..."   # web search — tavily.com
-export GITHUB_TOKEN="ghp_..."      # optional, raises GitHub rate limits
+export GITHUB_TOKEN="ghp_..."      # code search — a zero-scope token works
 ```
 
 **4. Run:**
@@ -161,6 +162,38 @@ docker run -p 8000:8000 thinkmcp \
   python -m transport.http_transport --port 8000
 ```
 
+## Benchmark: do the reasoning tools actually help?
+
+An ablation study over a fixed 6-question set (retrieval, comparison, explanation tasks — all answerable without API keys):
+
+- **Arm A** sees all 13 tools and is prompted to plan / think / self-critique.
+- **Arm B** runs against a server started with `THINKMCP_DISABLE_REASONING=1`, which hides `think`/`critique`/`plan` from `tools/list` — the model can't see them, not merely can't call them.
+- Same turn budget (16) for both arms. Two agent hosts were tested: the local Qwen 3 agent, and Claude Sonnet connected to the same server over MCP.
+- Every answer pair was judged **blind** by Claude Sonnet in **both orderings**; an arm wins a question only if the judge picks it both times. Inconsistent picks count as ties.
+
+| Agent host | With reasoning tools | Without (ablated) | Ties |
+|---|---|---|---|
+| Qwen 3 VL 8B (local, Ollama) | 1/6 | **3/6** | 2/6 |
+| Claude Sonnet (over MCP) | 1/6 | 1/6 | **4/6** |
+
+**The honest read: the heuristic reasoning tools did not improve judged answer quality.** What the data *did* show:
+
+- They change **behavior**, not prose quality: with `plan_tool`, the 8B agent averaged fewer tool calls (9.3 vs 11.8) and avoided tool-thrashing on the worst question (15 calls vs 45 for the ablated arm).
+- A frontier model neither needs nor is hurt by the scaffolding (4/6 ties) — and it skipped the tools entirely on pure-knowledge questions, answering in 1 turn.
+- The benchmark surfaced a real agent bug that's now fixed: runs that exhaust the iteration budget used to return nothing; the agent now forces a final answer from the evidence it gathered.
+
+This is exactly why `critique`/`plan` being deterministic heuristics matters: they add structure and traceability, but no new intelligence — which motivates the LLM-backed critique mode on the roadmap. Negative results that point at the next experiment are worth more than inflated ones.
+
+Reproduce (full per-question data lands in `benchmarks/results*.json`):
+
+```bash
+python benchmarks/run_benchmark.py                 # local arms (Ollama)
+python benchmarks/run_benchmark_claude.py          # Sonnet arms (needs Claude Code CLI)
+python benchmarks/judge_with_claude.py             # blind judging (needs Claude Code CLI)
+```
+
+*Caveats: n=6, one run per arm, LLM-as-judge. This is a directional ablation, not a paper.*
+
 ## Tests & quality
 
 ```bash
@@ -180,7 +213,8 @@ Both run in [GitHub Actions](.github/workflows/ci.yml) on Python 3.10 and 3.12 f
 | `THINKMCP_MEMORY_DB` | `./thinkmcp_memory.db` | SQLite memory location |
 | `THINKMCP_REPORTS_DIR` | `./reports` | Where `write_report` saves files |
 | `TAVILY_API_KEY` | — | Enables `web_search` |
-| `GITHUB_TOKEN` | — | Higher rate limits for `search_code` |
+| `GITHUB_TOKEN` | — | Enables `search_code` (GitHub's code-search API requires auth; a token with **no scopes** is enough) |
+| `THINKMCP_DISABLE_REASONING` | — | Set `1` to hide `think`/`critique`/`plan` (benchmark ablation) |
 
 ## Project layout
 
@@ -200,6 +234,7 @@ thinkmcp/
 │   ├── stdio_transport.py     # stdio launcher (Claude Desktop)
 │   └── http_transport.py      # Streamable HTTP launcher (remote)
 ├── tests/                     # pytest suite
+├── benchmarks/                # reasoning-tools ablation benchmark + results
 ├── app.py                     # Streamlit UI with live-streaming trace
 ├── pyproject.toml
 └── Dockerfile
@@ -212,8 +247,8 @@ thinkmcp/
 
 ## Roadmap
 
-- [ ] Benchmark: answer quality with vs. without the reasoning tools on a fixed question set
-- [ ] LLM-judged critique mode (local, via Ollama) as an opt-in alternative to heuristics
+- [x] Benchmark: answer quality with vs. without the reasoning tools on a fixed question set — [done, results above](#benchmark-do-the-reasoning-tools-actually-help)
+- [ ] LLM-backed critique mode (local, via Ollama) — the benchmark's null result makes this the obvious next experiment
 - [ ] Semantic memory recall (embeddings over the SQLite store)
 - [ ] One-command hosted demo
 
