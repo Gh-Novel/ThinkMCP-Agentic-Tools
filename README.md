@@ -1,61 +1,123 @@
-# ThinkMCP
+<div align="center">
 
-A thinking-augmented MCP (Model Context Protocol) server that gives Claude deep research and reasoning tools. When connected, Claude can search the web, read URLs, find academic papers, search GitHub, plan multi-step tasks, record thoughts, manage in-session memory, and write reports — all while exposing its reasoning trace.
+# 🧠 ThinkMCP
 
-## What It Is
+**A local-first research agent that shows its work — built end-to-end on the Model Context Protocol.**
 
-ThinkMCP wraps 13 tools across four categories into a single MCP server:
+Qwen 3 thinks, plans, searches, self-critiques, and writes reports — entirely on your machine.
+No cloud LLM. No API bill. Every thought and tool call streamed live to the screen.
 
-| Category  | Tools |
-|-----------|-------|
-| Research  | `web_search`, `fetch_url`, `search_papers`, `search_code` |
-| Reasoning | `think`, `critique`, `plan` |
-| Memory    | `remember`, `recall`, `list_memory` |
-| Actions   | `write_report`, `create_summary`, `compare` |
+[![CI](https://github.com/Gh-Novel/ThinkMCP-Agentic-Tools/actions/workflows/ci.yml/badge.svg)](https://github.com/Gh-Novel/ThinkMCP-Agentic-Tools/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/protocol-MCP-7c3aed.svg)](https://modelcontextprotocol.io)
+[![Ollama](https://img.shields.io/badge/runs%20on-Ollama%20%C2%B7%20Qwen%203-orange.svg)](https://ollama.com)
 
-It ships with two interfaces:
-- **Streamlit UI** (`app.py`) — interactive research assistant with visible thinking trace, tool call log, and markdown export
-- **MCP server** (`server/mcp_server.py`) — connects directly to Claude Desktop, Cursor, VS Code, or any MCP-compatible host
+</div>
 
-## Requirements
+<!-- ──────────────────────────────────────────────────────────────
+     DEMO GIF GOES HERE — record the Streamlit UI running a query
+     and save it as docs/demo.gif, then uncomment:
 
-- Python 3.12+
-- `ANTHROPIC_API_KEY` — [console.anthropic.com](https://console.anthropic.com)
-- `TAVILY_API_KEY` — [tavily.com](https://tavily.com) (web search)
-- `GITHUB_TOKEN` — optional, raises GitHub API rate limits for code search
+<p align="center">
+  <img src="docs/demo.gif" alt="ThinkMCP — live thinking trace while researching" width="850">
+</p>
+─────────────────────────────────────────────────────────────── -->
 
-## Install
+---
+
+## What it does
+
+Ask a research question. The agent **plans** an approach, **searches** the web, ArXiv, and GitHub, **remembers** what it finds, **critiques** its own draft, and delivers a sourced answer — while the UI renders every reasoning step and tool invocation the moment it happens. Export any session as Markdown or JSON.
+
+The same 13-tool MCP server also plugs straight into **Claude Desktop, Cursor, or VS Code**.
+
+## Engineering highlights
+
+These are deliberate design decisions, not defaults:
+
+- 🔌 **The agent is a real MCP client — not a wrapper.** It spawns the server as a subprocess, discovers tools over the protocol (`tools/list`), and invokes them with `tools/call` ([agent/mcp_client.py](agent/mcp_client.py)). Zero hardcoded tool schemas; add a tool to the server and the agent picks it up automatically. This is the exact integration path Claude Desktop uses.
+- 🏠 **Local-first inference.** The reasoning loop runs on Qwen 3 via Ollama ([agent/thinking_agent.py](agent/thinking_agent.py)), capturing the model's native thinking stream — with automatic fallback to parsing inline `<think>` tags for instruct-only variants. Works fully offline except optional web search.
+- 📡 **True live streaming.** The agent emits events (`thinking`, `tool_call`, `tool_result`) through a callback; the Streamlit UI drains them from a thread-safe queue and renders mid-run — no waiting for completion ([app.py](app.py)).
+- 💾 **Durable memory.** `remember`/`recall` are SQLite-backed ([server/tools/memory.py](server/tools/memory.py)), so findings survive restarts and are shared between the UI agent and any connected MCP host.
+- 🚦 **Two transports, one server.** stdio for desktop hosts, Streamable HTTP for remote/multi-client deployments — selected at launch, not forked code.
+- ✅ **Tested and linted in CI.** 31 pytest cases covering tools, agent helpers, and server registration, plus ruff — on Python 3.10 and 3.12 for every push.
+
+## The 13 tools
+
+| Category  | Tools | Notes |
+|-----------|-------|-------|
+| Research  | `web_search` · `fetch_url` · `search_papers` · `search_code` | Tavily, raw HTTP, ArXiv, GitHub |
+| Reasoning | `think` · `critique` · `plan` | deterministic, instant, reproducible |
+| Memory    | `remember` · `recall` · `list_memory` | persisted in SQLite |
+| Actions   | `write_report` · `create_summary` · `compare` | markdown deliverables |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph UI["Streamlit UI (app.py)"]
+        Q[Query] --> A
+        A -. "live events:<br/>thinking · tool_call · tool_result" .-> Q
+    end
+    subgraph Agent["Thinking Agent (agent/)"]
+        A[Ollama · Qwen 3<br/>native thinking + tool calls]
+    end
+    subgraph Server["ThinkMCP Server (server/)"]
+        T1[Research tools]
+        T2[Reasoning tools]
+        T3[Memory · SQLite]
+        T4[Action tools]
+    end
+    A -- "MCP over stdio<br/>tools/list · tools/call" --> Server
+    C[Claude Desktop / Cursor / VS Code] -- "MCP (stdio or HTTP)" --> Server
+```
+
+## How the agent loop works
+
+1. Connect to the ThinkMCP server as an MCP client and discover all tools over the protocol.
+2. Send the query to Qwen 3 with the discovered tool schemas and thinking enabled.
+3. Capture the thinking stream → emit it to the UI as it arrives.
+4. Execute each requested tool **through MCP**, feed results back to the model.
+5. Repeat until the model answers (or the iteration cap trips), self-critiquing along the way.
+
+## Quickstart
+
+**1. Install [Ollama](https://ollama.com) and a Qwen 3 model** (any tool-capable variant):
 
 ```bash
-git clone https://github.com/yourname/thinkmcp
-cd thinkmcp
+ollama pull qwen3:8b
+```
+
+**2. Install ThinkMCP:**
+
+```bash
+git clone https://github.com/Gh-Novel/ThinkMCP-Agentic-Tools
+cd ThinkMCP-Agentic-Tools
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
-Set your keys:
+**3. (Optional) keys for web/code search** — everything else needs none:
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-export TAVILY_API_KEY="tvly-..."
-export GITHUB_TOKEN="ghp_..."          # optional
+export TAVILY_API_KEY="tvly-..."   # web search — tavily.com
+export GITHUB_TOKEN="ghp_..."      # optional, raises GitHub rate limits
 ```
 
-## Run the Streamlit UI
+**4. Run:**
 
 ```bash
 streamlit run app.py
 ```
 
-Opens at `http://localhost:8501`. Enter a query, watch thinking steps and tool calls stream in real time, then export the session as markdown or JSON.
+Opens at `http://localhost:8501` — pick your model in the sidebar (installed models are auto-detected) and run a query.
 
-## Add to Claude Desktop
+> Defaults are env-overridable: `THINKMCP_MODEL=qwen3:14b`, `OLLAMA_HOST=http://...`
 
-1. Find your config file:
-   - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+## Use the server from Claude Desktop / Cursor / VS Code
 
-2. Add the server block (replace the paths and keys):
+**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
@@ -64,7 +126,6 @@ Opens at `http://localhost:8501`. Enter a query, watch thinking steps and tool c
       "command": "python",
       "args": ["/absolute/path/to/thinkmcp/server/mcp_server.py"],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
         "TAVILY_API_KEY": "tvly-...",
         "GITHUB_TOKEN": "ghp_...",
         "THINKMCP_REPORTS_DIR": "/absolute/path/to/thinkmcp/reports"
@@ -74,93 +135,54 @@ Opens at `http://localhost:8501`. Enter a query, watch thinking steps and tool c
 }
 ```
 
-3. Restart Claude Desktop. You'll see ThinkMCP listed under connected servers.
+**Cursor** — Settings → MCP → Add MCP Server, paste the same block.
+**VS Code** — add the same server (with `"type": "stdio"`) to `.vscode/mcp.json`.
 
-## Add to Cursor
+Restart the host and ThinkMCP appears under connected servers.
 
-1. Open **Cursor Settings** → **MCP** → **Add MCP Server**
-2. Paste this config:
-
-```json
-{
-  "mcpServers": {
-    "thinkmcp": {
-      "command": "python",
-      "args": ["/absolute/path/to/thinkmcp/server/mcp_server.py"],
-      "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
-        "TAVILY_API_KEY": "tvly-...",
-        "GITHUB_TOKEN": "ghp_...",
-        "THINKMCP_REPORTS_DIR": "/absolute/path/to/thinkmcp/reports"
-      }
-    }
-  }
-}
-```
-
-3. Save and reload the window.
-
-## Add to VS Code (Copilot / MCP extension)
-
-With the [MCP extension](https://marketplace.visualstudio.com/items?itemName=anthropics.claude-vscode) or a compatible client, add to your `.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "thinkmcp": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["/absolute/path/to/thinkmcp/server/mcp_server.py"],
-      "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
-        "TAVILY_API_KEY": "tvly-...",
-        "GITHUB_TOKEN": "ghp_...",
-        "THINKMCP_REPORTS_DIR": "/absolute/path/to/thinkmcp/reports"
-      }
-    }
-  }
-}
-```
-
-## Run as Remote HTTP Server
-
-For cloud deployments or multi-client setups, run the Streamable HTTP transport:
+## Remote HTTP server & Docker
 
 ```bash
+# Streamable HTTP transport — MCP endpoint at http://host:8000/mcp
 python -m transport.http_transport --host 0.0.0.0 --port 8000
 ```
 
-The MCP endpoint is at `http://your-host:8000/mcp`.
-
-Then configure your client with type `http` and URL `http://your-host:8000/mcp`.
-
-## Docker
-
 ```bash
 docker build -t thinkmcp .
-```
 
-Run the Streamlit UI:
-
-```bash
+# Streamlit UI (talks to Ollama on the host machine)
 docker run -p 8501:8501 \
-  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  -e OLLAMA_HOST="http://host.docker.internal:11434" \
   -e TAVILY_API_KEY="tvly-..." \
-  -e GITHUB_TOKEN="ghp_..." \
   thinkmcp
-```
 
-Run the MCP HTTP server instead:
-
-```bash
-docker run -p 8000:8000 \
-  -e ANTHROPIC_API_KEY="sk-ant-..." \
-  -e TAVILY_API_KEY="tvly-..." \
-  thinkmcp \
+# Or run the MCP HTTP server instead
+docker run -p 8000:8000 thinkmcp \
   python -m transport.http_transport --port 8000
 ```
 
-## Project Layout
+## Tests & quality
+
+```bash
+pytest          # 31 tests: tools, agent helpers, MCP server registration
+ruff check .    # lint
+```
+
+Both run in [GitHub Actions](.github/workflows/ci.yml) on Python 3.10 and 3.12 for every push and PR.
+
+## Configuration
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `THINKMCP_MODEL` | `qwen3:8b` | Default agent model |
+| `THINKMCP_NUM_CTX` | `16384` | Context window for the agent loop |
+| `THINKMCP_MEMORY_DB` | `./thinkmcp_memory.db` | SQLite memory location |
+| `THINKMCP_REPORTS_DIR` | `./reports` | Where `write_report` saves files |
+| `TAVILY_API_KEY` | — | Enables `web_search` |
+| `GITHUB_TOKEN` | — | Higher rate limits for `search_code` |
+
+## Project layout
 
 ```
 thinkmcp/
@@ -169,25 +191,32 @@ thinkmcp/
 │   └── tools/
 │       ├── research.py        # web_search, fetch_url, search_papers, search_code
 │       ├── reasoning.py       # think, critique, plan
-│       ├── memory.py          # remember, recall, list_memory
+│       ├── memory.py          # remember, recall, list_memory (SQLite-backed)
 │       └── actions.py         # write_report, create_summary, compare
 ├── agent/
-│   ├── thinking_agent.py      # agentic loop with adaptive thinking
-│   ├── tool_executor.py       # in-process tool dispatch
-│   └── trace_parser.py        # extracts thinking/tool blocks from responses
+│   ├── mcp_client.py          # real MCP stdio client (tools/list + tools/call)
+│   └── thinking_agent.py      # Ollama (Qwen 3) agentic loop with thinking
 ├── transport/
 │   ├── stdio_transport.py     # stdio launcher (Claude Desktop)
 │   └── http_transport.py      # Streamable HTTP launcher (remote)
-├── app.py                     # Streamlit UI
-├── requirements.txt
-├── mcp_config.json            # template config for MCP clients
+├── tests/                     # pytest suite
+├── app.py                     # Streamlit UI with live-streaming trace
+├── pyproject.toml
 └── Dockerfile
 ```
 
-## Reports
+## Design notes
 
-`write_report` saves markdown files to `THINKMCP_REPORTS_DIR` (default: `./reports/`). Files are timestamped: `report_my_topic_20240507_143022.md`.
+- `critique` and `plan` are **deterministic heuristics by choice** — instant, free, and reproducible. The LLM does the reasoning; these tools provide structure and a self-check ritual without burning tokens or adding nondeterminism.
+- Thinking capture degrades gracefully: native thinking stream when the model supports it, inline `<think>`-tag parsing when it doesn't.
+
+## Roadmap
+
+- [ ] Benchmark: answer quality with vs. without the reasoning tools on a fixed question set
+- [ ] LLM-judged critique mode (local, via Ollama) as an opt-in alternative to heuristics
+- [ ] Semantic memory recall (embeddings over the SQLite store)
+- [ ] One-command hosted demo
 
 ## License
 
-MIT
+[MIT](LICENSE)
