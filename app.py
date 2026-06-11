@@ -1,19 +1,21 @@
 """
-ThinkMCP — Streamlit UI
+ThinkMCP — Streamlit UI (local-first: Ollama + Qwen 3).
+
+Runs the thinking agent against your local Ollama server and streams the
+thinking trace and tool calls into the UI live, as they happen.
 """
 from __future__ import annotations
 
 import json
 import os
-import sys
-import time
+import queue
 import threading
+import time
 from datetime import datetime
 from typing import Any
 
 import streamlit as st
 
-sys.path.insert(0, os.path.dirname(__file__))
 from agent.thinking_agent import run_thinking_agent
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -63,6 +65,10 @@ st.markdown("""
     text-transform: uppercase; letter-spacing: 0.1em;
     margin: 6px 0 4px 0;
 }
+
+/* Status pills */
+.pill-ok  { color: #34d399; font-size: 12px; }
+.pill-bad { color: #f87171; font-size: 12px; }
 
 /* Keyboard shortcut hint */
 .kb-hint { font-size: 12.5px; color: #555; padding: 9px 0 0 4px; display: inline-block; }
@@ -193,6 +199,31 @@ hr { border-color: #1a1a1a !important; }
 st.session_state.setdefault("result", None)
 st.session_state.setdefault("history", [])
 
+# ── Ollama helpers ────────────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def installed_models(host: str) -> list[str]:
+    """List models available on the local Ollama server (empty if unreachable)."""
+    try:
+        import ollama
+
+        resp = ollama.Client(host=host).list()
+        return [m.model for m in resp.models]
+    except Exception:
+        return []
+
+
+def pick_default_model(models: list[str]) -> int:
+    preferred = os.environ.get("THINKMCP_MODEL", "")
+    if preferred in models:
+        return models.index(preferred)
+    for i, m in enumerate(models):
+        if m.lower().startswith("qwen3"):
+            return i
+    return 0
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -201,20 +232,44 @@ with st.sidebar:
         <div class="sb-icon">🧠</div>
         <div>
             <div class="sb-title">ThinkMCP</div>
-            <div class="sb-sub">Research Agent</div>
+            <div class="sb-sub">Local Research Agent · Ollama</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    with st.expander("SETTINGS", expanded=True):
+    with st.expander("MODEL", expanded=True):
+        st.markdown('<div class="sec-label">Ollama Host</div>', unsafe_allow_html=True)
+        ollama_host = st.text_input(
+            "oh", label_visibility="collapsed",
+            value=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+        )
+        models = installed_models(ollama_host)
+        st.markdown('<div class="sec-label">Model</div>', unsafe_allow_html=True)
+        if models:
+            model = st.selectbox(
+                "om", models, index=pick_default_model(models),
+                label_visibility="collapsed",
+            )
+            st.markdown('<span class="pill-ok">● Ollama connected</span>',
+                        unsafe_allow_html=True)
+        else:
+            model = st.text_input(
+                "om", label_visibility="collapsed",
+                value=os.environ.get("THINKMCP_MODEL", "qwen3:8b"),
+            )
+            st.markdown('<span class="pill-bad">● Ollama not reachable — is it running?</span>',
+                        unsafe_allow_html=True)
+
+    with st.expander("SETTINGS", expanded=False):
         st.markdown('<div class="sec-label">System Prompt</div>', unsafe_allow_html=True)
         system_prompt = st.text_area(
             "sp", label_visibility="collapsed", height=155,
             value=(
                 "You are ThinkMCP — a thinking-augmented research agent. "
-                "Before each action, use think_tool to reason about your approach. "
-                "After gathering evidence, use critique_tool to verify quality. "
-                "Use remember_tool to persist key findings across steps. "
+                "Before each action, reason carefully about your approach. "
+                "Use web_search_tool, fetch_url_tool, search_papers_tool and "
+                "search_code_tool to gather evidence. Use critique_tool on your "
+                "draft before answering. Use remember_tool to persist key findings. "
                 "When done, present a thorough, well-sourced answer."
             ),
         )
@@ -222,29 +277,24 @@ with st.sidebar:
         max_iter = st.slider("mi", 5, 30, 20, label_visibility="collapsed")
         show_raw = st.toggle("Show raw trace JSON", value=False)
 
-    with st.expander("API KEYS", expanded=True):
-        st.markdown('<div class="sec-label">Tavily</div>', unsafe_allow_html=True)
+    with st.expander("API KEYS", expanded=False):
+        st.caption("Only needed for web search / GitHub code search. "
+                   "Everything else runs fully local.")
+        st.markdown('<div class="sec-label">Tavily (web search)</div>', unsafe_allow_html=True)
         tavily_key = st.text_input(
             "tv", type="password", label_visibility="collapsed",
             value=os.environ.get("TAVILY_API_KEY", ""),
         )
-        st.markdown('<div class="sec-label">Anthropic</div>', unsafe_allow_html=True)
-        anthropic_key = st.text_input(
-            "ak", type="password", label_visibility="collapsed",
-            value=os.environ.get("ANTHROPIC_API_KEY", ""),
-        )
-        st.markdown('<div class="sec-label">GitHub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">GitHub (optional)</div>', unsafe_allow_html=True)
         github_token = st.text_input(
             "gh", type="password", label_visibility="collapsed",
             placeholder="(optional)",
             value=os.environ.get("GITHUB_TOKEN", ""),
         )
 
-    # Propagate keys to env
+    # Propagate keys to env (inherited by the MCP server subprocess)
     if tavily_key:
         os.environ["TAVILY_API_KEY"] = tavily_key
-    if anthropic_key:
-        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
     if github_token:
         os.environ["GITHUB_TOKEN"] = github_token
 
@@ -324,33 +374,21 @@ def render_trace_entry(entry: dict, container: Any) -> None:
                 )
 
 
-def render_result(result: dict) -> None:
-    """Populate all output slots from a result dict."""
+def render_answer_and_metrics(result: dict) -> None:
+    """Fill the answer, metrics and export slots from a result dict."""
     trace   = result.get("trace", [])
     answer  = result.get("answer", "")
     elapsed = result.get("elapsed", 0.0)
     q       = result.get("query", "")
 
-    # Trace tab
-    trace_empty_slot.empty()
-    rendered: set = set()
-    for entry in trace:
-        key = (entry.get("step"), entry.get("tool_name") or "think")
-        if key not in rendered:
-            render_trace_entry(entry, trace_container)
-            rendered.add(key)
-
-    # Raw JSON tab
     if show_raw:
         raw_json_slot.json({"query": q, "answer": answer, "trace": trace})
     else:
         raw_json_slot.markdown('<div class="empty-ans">Enable "Show raw trace JSON" in settings.</div>',
                                unsafe_allow_html=True)
 
-    # Answer
     answer_slot.markdown(answer or "*No text response generated.*")
 
-    # Metrics
     n_think = sum(1 for e in trace if e.get("thought"))
     n_tools = sum(1 for e in trace if e.get("tool_name"))
     tool_names = list(dict.fromkeys(e["tool_name"] for e in trace if e.get("tool_name")))
@@ -363,7 +401,6 @@ def render_result(result: dict) -> None:
         if tool_names:
             st.caption("· ".join(f"`{t}`" for t in tool_names))
 
-    # Export
     trace_md = "\n\n".join(
         f"**Step {e['step']}** — "
         + (f"🧠 {e.get('thought_summary','')}" if e.get("thought") else f"🔧 {e.get('tool_name','')}")
@@ -388,6 +425,18 @@ def render_result(result: dict) -> None:
                 mime="application/json", use_container_width=True,
             )
 
+
+def render_result(result: dict) -> None:
+    """Full re-render (stored / history results)."""
+    trace_empty_slot.empty()
+    rendered: set = set()
+    for entry in result.get("trace", []):
+        key = (entry.get("step"), entry.get("tool_name") or "think")
+        if key not in rendered:
+            render_trace_entry(entry, trace_container)
+            rendered.add(key)
+    render_answer_and_metrics(result)
+
 # ── Show stored result or empty states ────────────────────────────────────────
 
 if st.session_state.result and not run_btn:
@@ -404,11 +453,12 @@ else:
                          unsafe_allow_html=True)
     metrics_slot.markdown('<div class="empty-ans">No data yet.</div>', unsafe_allow_html=True)
 
-# ── Run agent ─────────────────────────────────────────────────────────────────
+# ── Run agent (live streaming) ────────────────────────────────────────────────
 
 if run_btn and query.strip():
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        st.error("Set your Anthropic API key in the sidebar first.")
+    if not models:
+        st.error(f"Cannot reach Ollama at {ollama_host}. Start it with `ollama serve` "
+                 f"and make sure a Qwen 3 model is pulled.")
         st.stop()
 
     # Clear previous output
@@ -418,9 +468,13 @@ if run_btn and query.strip():
     metrics_slot.empty()
     export_slot.empty()
 
-    done_event    = threading.Event()
+    done_event = threading.Event()
+    events: queue.Queue = queue.Queue()
     result_holder: dict = {"answer": "", "trace": [], "error": None}
-    start_time    = time.time()
+    start_time = time.time()
+
+    def _on_event(event_type: str, data: Any) -> None:
+        events.put((event_type, data))
 
     def _run() -> None:
         try:
@@ -428,7 +482,9 @@ if run_btn and query.strip():
                 query=query,
                 system_prompt=system_prompt,
                 max_iterations=max_iter,
-                on_event=lambda *_: None,
+                on_event=_on_event,
+                model=model,
+                ollama_host=ollama_host,
             )
             result_holder["answer"] = answer
             result_holder["trace"]  = trace
@@ -440,16 +496,34 @@ if run_btn and query.strip():
     threading.Thread(target=_run, daemon=True).start()
 
     frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    frame  = 0
-    while not done_event.is_set():
+    frame = 0
+    activity = "warming up"
+
+    # Drain events from the agent thread and render them as they arrive.
+    while not done_event.is_set() or not events.empty():
+        while not events.empty():
+            event_type, data = events.get_nowait()
+            if event_type == "thinking":
+                trace_empty_slot.empty()
+                render_trace_entry(data, trace_container)
+                activity = "thinking"
+            elif event_type == "tool_call":
+                activity = f"calling {data.get('name', 'tool')}"
+            elif event_type == "tool_result":
+                trace_empty_slot.empty()
+                render_trace_entry(data, trace_container)
+            elif event_type == "text":
+                answer_slot.markdown(data.get("text", ""))
+                activity = "writing answer"
+
         elapsed = time.time() - start_time
         status_slot.markdown(
             f"<div style='color:#555;font-size:13px;padding:4px 0'>"
-            f"{frames[frame % len(frames)]} Running… {elapsed:.0f}s</div>",
+            f"{frames[frame % len(frames)]} {activity}… {elapsed:.0f}s</div>",
             unsafe_allow_html=True,
         )
         frame += 1
-        time.sleep(0.15)
+        time.sleep(0.12)
 
     status_slot.empty()
     elapsed = time.time() - start_time
@@ -464,9 +538,10 @@ if run_btn and query.strip():
         "trace":   result_holder["trace"],
         "elapsed": elapsed,
         "timestamp": datetime.now().isoformat(),
+        "model": model,
     }
     st.session_state.result = result
-
-    render_result(result)
-
     st.session_state.history.append(result)
+
+    # Trace already rendered live — just fill in answer, metrics and export.
+    render_answer_and_metrics(result)
