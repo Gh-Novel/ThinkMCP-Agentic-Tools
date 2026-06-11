@@ -65,48 +65,50 @@ def search_papers_tool(topic: str) -> dict:
 def search_code_tool(query: str) -> dict:
     """
     Search GitHub for code matching a query.
-    Optionally uses GITHUB_TOKEN env var for higher rate limits.
+    Requires GITHUB_TOKEN (GitHub's code-search API needs auth; zero scopes suffice).
     Returns: {query, total_count, results: [{name, path, repo, url, score}]}
     """
     return search_code(query)
 
 
 # ── REASONING TOOLS ───────────────────────────────────────────────────────────
+# THINKMCP_DISABLE_REASONING=1 hides these three tools entirely — used by the
+# benchmark's ablated arm so the model cannot see (not just cannot call) them.
 
-@mcp.tool()
-def think_tool(thought: str) -> str:
-    """
-    A scratchpad for mid-workflow reasoning. Use this between tool calls to:
-    - Plan next steps
-    - Evaluate quality of retrieved results
-    - Detect contradictions between sources
-    - Decide if more information is needed
-    Does NOT call any external service. Returns the thought for traceability.
-    """
-    return think(thought)
+if os.environ.get("THINKMCP_DISABLE_REASONING", "") != "1":
 
+    @mcp.tool()
+    def think_tool(thought: str) -> str:
+        """
+        A scratchpad for mid-workflow reasoning. Use this between tool calls to:
+        - Plan next steps
+        - Evaluate quality of retrieved results
+        - Detect contradictions between sources
+        - Decide if more information is needed
+        Does NOT call any external service. Returns the thought for traceability.
+        """
+        return think(thought)
 
-@mcp.tool()
-def critique_tool(answer: str, question: str) -> dict:
-    """
-    Self-evaluate a draft answer before returning it to the user.
-    Returns a structured quality assessment with confidence score,
-    missing aspects, and a recommendation to accept or revise.
-    Returns: {answer_preview, word_count, completeness, confidence,
-              missing_aspects, recommendation}
-    """
-    return critique(answer, question)
+    @mcp.tool()
+    def critique_tool(answer: str, question: str) -> dict:
+        """
+        Self-evaluate a draft answer before returning it to the user.
+        Returns a structured quality assessment with confidence score,
+        missing aspects, and a recommendation to accept or revise.
+        Returns: {answer_preview, word_count, completeness, confidence,
+                  missing_aspects, recommendation}
+        """
+        return critique(answer, question)
 
-
-@mcp.tool()
-def plan_tool(goal: str) -> dict:
-    """
-    Break a goal into an ordered list of actionable sub-steps.
-    Detects goal type (research, comparison, implementation, summarization)
-    and returns a tailored strategy.
-    Returns: {goal, strategy, steps: [...], total_steps}
-    """
-    return plan(goal)
+    @mcp.tool()
+    def plan_tool(goal: str) -> dict:
+        """
+        Break a goal into an ordered list of actionable sub-steps.
+        Detects goal type (research, comparison, implementation, summarization)
+        and returns a tailored strategy.
+        Returns: {goal, strategy, steps: [...], total_steps}
+        """
+        return plan(goal)
 
 
 # ── MEMORY TOOLS ──────────────────────────────────────────────────────────────

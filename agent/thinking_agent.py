@@ -85,6 +85,7 @@ async def run_thinking_agent_async(
     on_event: Callable[[str, Any], None] | None = None,
     model: str = DEFAULT_MODEL,
     ollama_host: str = DEFAULT_OLLAMA_HOST,
+    exclude_tools: set[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Run the ThinkMCP agent on a query.
@@ -97,6 +98,7 @@ async def run_thinking_agent_async(
                   event_type in {'thinking', 'tool_call', 'tool_result', 'text', 'done'}
         model: Ollama model name (any tool-capable Qwen 3 variant works).
         ollama_host: Base URL of the Ollama server.
+        exclude_tools: Tool names to hide from the model (used for ablations).
 
     Returns:
         (final_answer, thinking_trace) where thinking_trace is a list of dicts
@@ -119,7 +121,7 @@ async def run_thinking_agent_async(
             except Exception:
                 pass
 
-    async with MCPToolClient() as mcp:
+    async with MCPToolClient(exclude_tools=exclude_tools) as mcp:
         messages: list[dict] = [
             {"role": "system", "content": system},
             {"role": "user", "content": query},
@@ -183,6 +185,36 @@ async def run_thinking_agent_async(
                     {"role": "tool", "tool_name": name, "content": result_str}
                 )
 
+        # Iteration cap reached — don't discard the gathered evidence.
+        # One final call with tools disabled forces an answer from context.
+        messages.append({
+            "role": "user",
+            "content": (
+                "You have reached the tool-call limit. Using only the "
+                "information gathered above, give your best final answer "
+                "now. Do not request any more tools."
+            ),
+        })
+        try:
+            response = await client.chat(
+                model=model,
+                messages=messages,
+                think=use_native_thinking,
+                options={"num_ctx": NUM_CTX},
+            )
+            msg = response.message
+            native_thought = getattr(msg, "thinking", None) or ""
+            tag_thought, visible = _split_think_tags(msg.content or "")
+            thought = native_thought or tag_thought
+            if thought.strip():
+                entry = _thinking_entry(step, thought.strip())
+                thinking_trace.append(entry)
+                _emit("thinking", entry)
+                step += 1
+            final_answer = visible.strip()
+        except ResponseError:
+            final_answer = ""
+
     final_answer = (
         final_answer
         or "Reached maximum iterations before the model produced a final answer."
@@ -198,6 +230,7 @@ def run_thinking_agent(
     on_event: Callable[[str, Any], None] | None = None,
     model: str = DEFAULT_MODEL,
     ollama_host: str = DEFAULT_OLLAMA_HOST,
+    exclude_tools: set[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """Synchronous wrapper around run_thinking_agent_async."""
     return asyncio.run(
@@ -208,5 +241,6 @@ def run_thinking_agent(
             on_event=on_event,
             model=model,
             ollama_host=ollama_host,
+            exclude_tools=exclude_tools,
         )
     )

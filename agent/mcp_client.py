@@ -30,9 +30,15 @@ class MCPToolClient:
             out = await mcp.call_tool("web_search_tool", {"query": "..."})
     """
 
-    def __init__(self, server_path: str = SERVER_PATH, env: dict[str, str] | None = None):
+    def __init__(
+        self,
+        server_path: str = SERVER_PATH,
+        env: dict[str, str] | None = None,
+        exclude_tools: set[str] | None = None,
+    ):
         self._server_path = server_path
         self._env = {**os.environ, **(env or {})}
+        self._exclude_tools = exclude_tools or set()
         self._stack: AsyncExitStack | None = None
         self.session: ClientSession | None = None
         self.tools: list[Any] = []
@@ -50,7 +56,7 @@ class MCPToolClient:
         await self.session.initialize()
 
         listing = await self.session.list_tools()
-        self.tools = listing.tools
+        self.tools = [t for t in listing.tools if t.name not in self._exclude_tools]
         self.ollama_tools = [
             {
                 "type": "function",
