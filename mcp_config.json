@@ -4,10 +4,10 @@
       "command": "python",
       "args": ["/ABSOLUTE/PATH/TO/thinkmcp/server/mcp_server.py"],
       "env": {
-        "ANTHROPIC_API_KEY": "your_anthropic_api_key",
         "TAVILY_API_KEY": "your_tavily_api_key",
         "GITHUB_TOKEN": "your_github_token_optional",
-        "THINKMCP_REPORTS_DIR": "/ABSOLUTE/PATH/TO/thinkmcp/reports"
+        "THINKMCP_REPORTS_DIR": "/ABSOLUTE/PATH/TO/thinkmcp/reports",
+        "THINKMCP_MEMORY_DB": "/ABSOLUTE/PATH/TO/thinkmcp/thinkmcp_memory.db"
       }
     }
   }

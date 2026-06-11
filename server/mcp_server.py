@@ -6,18 +6,18 @@ Transports:
   HTTP            — for remote / Streamlit deployment (use --http flag)
 """
 
-import sys
 import os
+import sys
 
 # Allow running as: python server/mcp_server.py [--http] [--port PORT]
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from mcp.server.fastmcp import FastMCP
 
-from server.tools.research import web_search, fetch_url, search_papers, search_code
-from server.tools.reasoning import think, critique, plan
-from server.tools.memory import remember, recall, list_memory
-from server.tools.actions import write_report, create_summary, compare
+from server.tools.actions import compare, create_summary, write_report
+from server.tools.memory import list_memory, recall, remember
+from server.tools.reasoning import critique, plan, think
+from server.tools.research import fetch_url, search_code, search_papers, web_search
 
 mcp = FastMCP(
     name="ThinkMCP",
@@ -114,7 +114,7 @@ def plan_tool(goal: str) -> dict:
 @mcp.tool()
 def remember_tool(key: str, value: str) -> dict:
     """
-    Persist a key-value pair in session memory for later recall.
+    Persist a key-value pair in durable memory (SQLite) for later recall.
     Use descriptive keys like 'ddim_key_claim' or 'source_A_summary'.
     Returns: {status, key, value_preview, total_keys}
     """
@@ -133,7 +133,7 @@ def recall_tool(key: str) -> dict:
 @mcp.tool()
 def list_memory_tool() -> dict:
     """
-    Show all key-value pairs currently stored in session memory.
+    Show all key-value pairs currently stored in memory.
     Returns: {total, entries: {key: value_preview}}
     """
     return list_memory()
@@ -184,7 +184,9 @@ if __name__ == "__main__":
 
     if args.http:
         print(f"[ThinkMCP] Starting HTTP server on {args.host}:{args.port}", file=sys.stderr)
-        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport="streamable-http")
     else:
         print("[ThinkMCP] Starting stdio server", file=sys.stderr)
         mcp.run(transport="stdio")

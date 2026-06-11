@@ -1,11 +1,11 @@
 """Research tools: web_search, fetch_url, search_papers, search_code."""
 
+import html
+import json
 import os
 import re
 import urllib.parse
 import urllib.request
-import json
-import html
 
 
 def web_search(query: str) -> dict:

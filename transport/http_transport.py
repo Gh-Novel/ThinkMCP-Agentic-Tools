@@ -26,7 +26,9 @@ def main() -> None:
     args = parser.parse_args()
 
     print(f"[ThinkMCP HTTP] Listening on http://{args.host}:{args.port}/mcp", file=sys.stderr)
-    mcp.run(transport="streamable-http", host=args.host, port=args.port)
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":

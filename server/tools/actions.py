@@ -2,23 +2,24 @@
 
 import os
 import re
-import textwrap
 from datetime import datetime
 
 
-REPORTS_DIR = os.environ.get("THINKMCP_REPORTS_DIR", "./reports")
+def _reports_dir() -> str:
+    return os.environ.get("THINKMCP_REPORTS_DIR", "./reports")
 
 
 def write_report(title: str, content: str) -> dict:
     """Format content as a markdown report and save it to disk."""
-    os.makedirs(REPORTS_DIR, exist_ok=True)
+    reports_dir = _reports_dir()
+    os.makedirs(reports_dir, exist_ok=True)
 
     # Sanitize filename
     safe_title = re.sub(r"[^\w\s-]", "", title).strip()
     safe_title = re.sub(r"\s+", "_", safe_title)[:60]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{safe_title}.md"
-    filepath = os.path.join(REPORTS_DIR, filename)
+    filepath = os.path.join(reports_dir, filename)
 
     report_body = f"""# {title}
 
